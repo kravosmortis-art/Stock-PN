@@ -13,5 +13,4 @@ def run_web_server():
     server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
     server.serve_forever()
 
-# รัน Web Server แยก Thread เพื่อไม่ให้รบกวนการทำงานของบอท
 Thread(target=run_web_server, daemon=True).start()
