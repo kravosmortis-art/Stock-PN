@@ -1,0 +1,7 @@
+{
+  "name": "discord-inventory-bot",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "python index.py"
+  }
+}
