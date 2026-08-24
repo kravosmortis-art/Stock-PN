@@ -1,13 +1,12 @@
 import os
 import sqlite3
-import re
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import discord
 from discord.ext import commands
-from discord.ui import Button, View, Modal, TextInput
+from discord.ui import Button, View, Modal, TextInput, Select
 
-# --- Web Server เพื่อให้ Render และ UptimeRobot เช็ก Health Check ---
+# --- Web Server สำหรับ Health Check ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -43,7 +42,6 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 def get_db_connection():
     return sqlite3.connect("inventory.db", timeout=10)
 
-# สร้างตารางเริ่มต้น
 conn = get_db_connection()
 cursor = conn.cursor()
 cursor.execute("""
@@ -69,180 +67,161 @@ conn.commit()
 conn.close()
 
 
-# --- ฟังก์ชัน Helper สำหรับแกะข้อความไอเทม + จำนวน ---
-def parse_items_input(text: str):
-    parsed = []
-    lines = text.strip().split("\n")
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        # แยกข้อความโดยจับกลุ่ม ชื่อไอเทม กับ จำนวนตัวเลขด้านหลัง
-        match = re.search(r"^(.+?)[\s:=,]+(\d+)$", line)
-        if match:
-            item_name = match.group(1).strip()
-            qty = int(match.group(2))
-            if qty > 0:
-                parsed.append((item_name, qty))
-    return parsed
+# --- 3. หน้าต่างกรอกข้อมูล (Modals) ---
 
-
-# --- 3. หน้าต่างกรอกข้อมูลแบบรองรับหลายรายการ (Modals) ---
-
-class CreateNewItemModal(Modal, title="➕ เพิ่มประเภทไอเทมใหม่ (หลายรายการ)"):
-    items_input = TextInput(
-        label="รายชื่อไอเทมใหม่ (ใส่แยกบรรทัด)",
-        style=discord.TextStyle.paragraph,
-        placeholder="เช่น:\nกระสุนปืนไรเฟิล\nยาทำแผล\nเนื้อตากแห้ง",
-        required=True,
-        max_length=1000
-    )
-    initial_amount = TextInput(
-        label="จำนวนเริ่มต้น (ตั้งเท่ากันทุกรายการ)",
-        placeholder="เช่น 0 หรือ 100",
-        default="0",
-        required=True
-    )
+class CreateNewItemModal(Modal, title="➕ เพิ่มประเภทไอเทมใหม่"):
+    item_name = TextInput(label="ชื่อไอเทมใหม่", placeholder="เช่น ปืนไรเฟิล, แร่นกยูง", required=True)
+    initial_amount = TextInput(label="จำนวนเริ่มต้น", placeholder="เช่น 0 หรือ 100", default="0", required=True)
 
     async def on_submit(self, interaction: discord.Interaction):
+        name = self.item_name.value.strip()
         try:
             qty = int(self.initial_amount.value)
             if qty < 0:
                 raise ValueError
         except ValueError:
-            await interaction.response.send_message("❌ กรุณากรอกจำนวนเริ่มต้นเป็นตัวเลขเต็มบวกหรือ 0", ephemeral=True)
-            return
-
-        raw_text = self.items_input.value.replace(",", "\n")
-        raw_list = [item.strip() for item in raw_text.split("\n") if item.strip()]
-
-        if not raw_list:
-            await interaction.response.send_message("❌ กรุณากรอกชื่อไอเทมอย่างน้อย 1 รายการ", ephemeral=True)
+            await interaction.response.send_message("❌ กรุณากรอกจำนวนเป็นตัวเลขเต็มบวกหรือ 0 เท่านั้น", ephemeral=True)
             return
 
         conn = get_db_connection()
         cursor = conn.cursor()
-        added_items, skipped_items = [], []
+        cursor.execute("SELECT amount FROM inventory WHERE item_name = ?", (name,))
+        if cursor.fetchone():
+            conn.close()
+            await interaction.response.send_message(f"❌ มีไอเทมชื่อ **{name}** อยู่ในคลังแล้ว!", ephemeral=True)
+            return
 
-        for name in raw_list:
-            cursor.execute("SELECT amount FROM inventory WHERE item_name = ?", (name,))
-            if cursor.fetchone():
-                skipped_items.append(name)
-            else:
-                cursor.execute("INSERT INTO inventory (item_name, amount) VALUES (?, ?)", (name, qty))
-                cursor.execute(
-                    "INSERT INTO logs (user_name, action, item_name, amount, remaining_amount) VALUES (?, 'CREATE', ?, ?, ?)",
-                    (interaction.user.display_name, name, qty, qty)
-                )
-                added_items.append(name)
-
+        cursor.execute("INSERT INTO inventory (item_name, amount) VALUES (?, ?)", (name, qty))
+        cursor.execute(
+            "INSERT INTO logs (user_name, action, item_name, amount, remaining_amount) VALUES (?, 'CREATE', ?, ?, ?)",
+            (interaction.user.display_name, name, qty, qty)
+        )
         conn.commit()
         conn.close()
 
-        msg = []
-        if added_items:
-            msg.append(f"✅ **{interaction.user.display_name}** เพิ่มไอเทมใหม่ `{len(added_items)}` รายการ (จำนวน: {qty:,}):\n" + ", ".join([f"**{i}**" for i in added_items]))
-        if skipped_items:
-            msg.append(f"⚠️ ข้ามเนื่องจากมีอยู่แล้ว `{len(skipped_items)}` รายการ:\n" + ", ".join([f"**{i}**" for i in skipped_items]))
-
-        await interaction.response.send_message("\n\n".join(msg), ephemeral=False)
+        # ตั้งค่า ephemeral=True เพื่อให้เห็นเฉพาะคนกดสร้างไอเทม
+        await interaction.response.send_message(f"✨ **{interaction.user.display_name}** เพิ่มไอเทมใหม่ **{name}** (จำนวน: {qty:,} ชิ้น) เข้าคลังเรียบร้อย!", ephemeral=True)
 
 
-class MultiAddItemModal(Modal, title="📥 ฝาก/เพิ่มไอเทมเข้าคลัง (หลายรายการ)"):
-    items_input = TextInput(
-        label="พิมพ์ ชื่อไอเทม ตามด้วย จำนวน (แยกบรรทัด)",
-        style=discord.TextStyle.paragraph,
-        placeholder="เช่น:\nทองแดง 50\nเหล็ก 100\nสปริง 20",
-        required=True,
-        max_length=1500
-    )
+class AddItemModal(Modal, title="📥 ฝาก/เพิ่มไอเทมเข้าคลัง"):
+    def __init__(self, item_name: str):
+        super().__init__()
+        self.selected_item = item_name
+        self.amount = TextInput(label=f"จำนวนที่ต้องการเพิ่ม: {item_name[:20]}", placeholder="เช่น 10", required=True)
+        self.add_item(self.amount)
 
     async def on_submit(self, interaction: discord.Interaction):
-        parsed = parse_items_input(self.items_input.value)
-        if not parsed:
-            await interaction.response.send_message("❌ รูปแบบไม่ถูกต้อง! กรุณากรอกในรูปแบบ `ชื่อไอเทม จำนวน` เช่น `เหล็ก 50` (1 บรรทัดต่อ 1 รายการ)", ephemeral=True)
+        try:
+            qty = int(self.amount.value)
+            if qty <= 0:
+                raise ValueError
+        except ValueError:
+            await interaction.response.send_message("❌ กรุณากรอกจำนวนเป็นตัวเลขเต็มบวกมากกว่า 0", ephemeral=True)
             return
 
         conn = get_db_connection()
         cursor = conn.cursor()
-        success_logs, not_found_items = [], []
+        cursor.execute("SELECT amount FROM inventory WHERE item_name = ?", (self.selected_item,))
+        row = cursor.fetchone()
+        new_qty = (row[0] if row else 0) + qty
 
-        for item_name, qty in parsed:
-            cursor.execute("SELECT amount FROM inventory WHERE item_name = ?", (item_name,))
-            row = cursor.fetchone()
-            if row is None:
-                not_found_items.append(item_name)
-            else:
-                new_qty = row[0] + qty
-                cursor.execute("UPDATE inventory SET amount = ? WHERE item_name = ?", (new_qty, item_name))
-                cursor.execute(
-                    "INSERT INTO logs (user_name, action, item_name, amount, remaining_amount) VALUES (?, 'ADD', ?, ?, ?)",
-                    (interaction.user.display_name, item_name, qty, new_qty)
-                )
-                success_logs.append(f"• **{item_name}**: +{qty:,} (คงเหลือ: `{new_qty:,}`)")
-
+        cursor.execute("UPDATE inventory SET amount = ? WHERE item_name = ?", (new_qty, self.selected_item))
+        cursor.execute(
+            "INSERT INTO logs (user_name, action, item_name, amount, remaining_amount) VALUES (?, 'ADD', ?, ?, ?)",
+            (interaction.user.display_name, self.selected_item, qty, new_qty)
+        )
         conn.commit()
         conn.close()
 
-        msg = []
-        if success_logs:
-            msg.append(f"📥 **{interaction.user.display_name}** ฝากไอเทมเข้าคลังสำเร็จ `{len(success_logs)}` รายการ:\n" + "\n".join(success_logs))
-        if not_found_items:
-            msg.append(f"❌ ไม่พบไอเทมในระบบ `{len(not_found_items)}` รายการ (ต้องกดสร้างไอเทมใหม่ก่อน):\n" + ", ".join([f"**{i}**" for i in not_found_items]))
-
-        await interaction.response.send_message("\n\n".join(msg), ephemeral=False)
+        # ตั้งค่า ephemeral=True เพื่อให้เห็นเฉพาะคนกดฝากไอเทม
+        await interaction.response.send_message(f"📥 **{interaction.user.display_name}** ฝาก **{self.selected_item}** +{qty:,} ชิ้น (คงเหลือในคลังกลาง: `{new_qty:,}` ชิ้น)", ephemeral=True)
 
 
-class MultiRemoveItemModal(Modal, title="📤 ถอน/เบิกไอเทมออกจากคลัง (หลายรายการ)"):
-    items_input = TextInput(
-        label="พิมพ์ ชื่อไอเทม ตามด้วย จำนวน (แยกบรรทัด)",
-        style=discord.TextStyle.paragraph,
-        placeholder="เช่น:\nทองแดง 10\nเหล็ก 5\nสปริง 2",
-        required=True,
-        max_length=1500
-    )
+class RemoveItemModal(Modal, title="📤 ถอน/เบิกไอเทมออกจากคลัง"):
+    def __init__(self, item_name: str):
+        super().__init__()
+        self.selected_item = item_name
+        self.amount = TextInput(label=f"จำนวนที่ต้องการถอน: {item_name[:20]}", placeholder="เช่น 5", required=True)
+        self.add_item(self.amount)
 
     async def on_submit(self, interaction: discord.Interaction):
-        parsed = parse_items_input(self.items_input.value)
-        if not parsed:
-            await interaction.response.send_message("❌ รูปแบบไม่ถูกต้อง! กรุณากรอกในรูปแบบ `ชื่อไอเทม จำนวน` เช่น `เหล็ก 10` (1 บรรทัดต่อ 1 รายการ)", ephemeral=True)
+        try:
+            qty = int(self.amount.value)
+            if qty <= 0:
+                raise ValueError
+        except ValueError:
+            await interaction.response.send_message("❌ กรุณากรอกจำนวนเป็นตัวเลขเต็มบวกมากกว่า 0", ephemeral=True)
             return
 
         conn = get_db_connection()
         cursor = conn.cursor()
-        success_logs, not_enough_items, not_found_items = [], [], []
+        cursor.execute("SELECT amount FROM inventory WHERE item_name = ?", (self.selected_item,))
+        row = cursor.fetchone()
+        current_qty = row[0] if row else 0
 
-        for item_name, qty in parsed:
-            cursor.execute("SELECT amount FROM inventory WHERE item_name = ?", (item_name,))
-            row = cursor.fetchone()
-            if row is None:
-                not_found_items.append(item_name)
-            elif row[0] < qty:
-                not_enough_items.append(f"• **{item_name}**: ต้องการถอน {qty:,} (คงเหลือมีแค่ `{row[0]:,}`)")
-            else:
-                new_qty = row[0] - qty
-                cursor.execute("UPDATE inventory SET amount = ? WHERE item_name = ?", (new_qty, item_name))
-                cursor.execute(
-                    "INSERT INTO logs (user_name, action, item_name, amount, remaining_amount) VALUES (?, 'REMOVE', ?, ?, ?)",
-                    (interaction.user.display_name, item_name, qty, new_qty)
-                )
-                success_logs.append(f"• **{item_name}**: -{qty:,} (คงเหลือ: `{new_qty:,}`)")
+        if current_qty < qty:
+            conn.close()
+            await interaction.response.send_message(f"❌ ไอเทม **{self.selected_item}** มีไม่เพียงพอ (คงเหลือปัจจุบัน: `{current_qty:,}` ชิ้น)", ephemeral=True)
+            return
 
+        new_qty = current_qty - qty
+        cursor.execute("UPDATE inventory SET amount = ? WHERE item_name = ?", (new_qty, self.selected_item))
+        cursor.execute(
+            "INSERT INTO logs (user_name, action, item_name, amount, remaining_amount) VALUES (?, 'REMOVE', ?, ?, ?)",
+            (interaction.user.display_name, self.selected_item, qty, new_qty)
+        )
         conn.commit()
         conn.close()
 
-        msg = []
-        if success_logs:
-            msg.append(f"📤 **{interaction.user.display_name}** เบิกไอเทมออกจากคลังสำเร็จ `{len(success_logs)}` รายการ:\n" + "\n".join(success_logs))
-        if not_enough_items:
-            msg.append("⚠️ ไอเทมไม่เพียงพอสำหรับการถอน:\n" + "\n".join(not_enough_items))
-        if not_found_items:
-            msg.append("❌ ไม่พบชื่อไอเทมในคลัง:\n" + ", ".join([f"**{i}**" for i in not_found_items]))
-
-        await interaction.response.send_message("\n\n".join(msg), ephemeral=False)
+        # ตั้งค่า ephemeral=True เพื่อให้เห็นเฉพาะคนกดถอนไอเทม
+        await interaction.response.send_message(f"📤 **{interaction.user.display_name}** เบิก **{self.selected_item}** -{qty:,} ชิ้น (คงเหลือในคลังกลาง: `{new_qty:,}` ชิ้น)", ephemeral=True)
 
 
-# --- 4. ปุ่มกดหลัก (Main Control Panel) ---
+# --- 4. เมนู Dropdown เลือกไอเทม ---
+
+class ItemSelectDropdown(Select):
+    def __init__(self, action_type: str, items_page: list, page_num: int = 1):
+        self.action_type = action_type
+        
+        options = [
+            discord.SelectOption(
+                label=name[:100], 
+                description=f"คงเหลือในคลัง: {qty:,} ชิ้น", 
+                value=name
+            )
+            for name, qty in items_page
+        ]
+
+        placeholder = f"📥 เลือกไอเทมนำเข้า (หน้า {page_num})..." if action_type == "add" else f"📤 เลือกไอเทมถอน (หน้า {page_num})..."
+        super().__init__(placeholder=placeholder, min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        selected_item = self.values[0]
+        if self.action_type == "add":
+            await interaction.response.send_modal(AddItemModal(selected_item))
+        elif self.action_type == "remove":
+            await interaction.response.send_modal(RemoveItemModal(selected_item))
+
+
+class ItemSelectView(View):
+    def __init__(self, action_type: str):
+        super().__init__(timeout=180)
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT item_name, amount FROM inventory ORDER BY item_name ASC")
+        items = cursor.fetchall()
+        conn.close()
+
+        chunk_size = 25
+        pages = [items[i:i + chunk_size] for i in range(0, len(items), chunk_size)]
+
+        for idx, page in enumerate(pages, start=1):
+            if page:
+                self.add_item(ItemSelectDropdown(action_type, page, idx))
+
+
+# --- 5. ปุ่มกดหลัก (Main Control Panel) ---
 
 class MainControlView(View):
     def __init__(self):
@@ -250,11 +229,11 @@ class MainControlView(View):
 
     @discord.ui.button(label="เพิ่มไอเทมเข้าคลัง", style=discord.ButtonStyle.green, custom_id="btn_add_item", emoji="📥")
     async def add_button(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_modal(MultiAddItemModal())
+        await interaction.response.send_message("เลือกไอเทมที่ต้องการนำเข้าจากเมนูด้านล่าง:", view=ItemSelectView("add"), ephemeral=True)
 
     @discord.ui.button(label="ถอนไอเทมออกจากคลัง", style=discord.ButtonStyle.red, custom_id="btn_remove_item", emoji="📤")
     async def remove_button(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_modal(MultiRemoveItemModal())
+        await interaction.response.send_message("เลือกไอเทมที่ต้องการถอนออกจากเมนูด้านล่าง:", view=ItemSelectView("remove"), ephemeral=True)
 
     @discord.ui.button(label="เพิ่มประเภทไอเทมใหม่", style=discord.ButtonStyle.secondary, custom_id="btn_create_item", emoji="➕")
     async def create_button(self, interaction: discord.Interaction, button: Button):
@@ -280,12 +259,13 @@ class MainControlView(View):
         formatted_text = "\n".join(stock_list)
 
         if len(formatted_text) > 1024:
-            embed.add_field(name="รายการไอเทมคงเหลือ (1)", value="\n".join(stock_list[:20]), inline=False)
-            embed.add_field(name="รายการไอเทมคงเหลือ (2)", value="\n".join(stock_list[20:]), inline=False)
+            embed.add_field(name="รายการไอเทมคงเหลือ (1)", value="\n".join(stock_list[:15]), inline=False)
+            embed.add_field(name="รายการไอเทมคงเหลือ (2)", value="\n".join(stock_list[15:]), inline=False)
         else:
             embed.add_field(name="รายการไอเทมคงเหลือ", value=formatted_text, inline=False)
 
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        # ตั้งค่า ephemeral=False เพื่อให้ส่งผลเช็กสต็อกลงแชทหลัก (ทุกคนมองเห็น)
+        await interaction.response.send_message(embed=embed, ephemeral=False)
 
     @discord.ui.button(label="ดูประวัติเพิ่ม-ถอน", style=discord.ButtonStyle.secondary, custom_id="btn_check_history", emoji="📜")
     async def history_button(self, interaction: discord.Interaction, button: Button):
@@ -318,23 +298,24 @@ class MainControlView(View):
 
             embed.description = "\n\n".join(log_entries)
 
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        # ตั้งค่า ephemeral=False เพื่อให้ส่งประวัติลงแชทหลัก (ทุกคนมองเห็น)
+        await interaction.response.send_message(embed=embed, ephemeral=False)
 
 
-# --- 5. คำสั่งเริ่มต้นระบบ ---
+# --- 6. คำสั่งเริ่มต้นระบบ ---
 
 @bot.command(name="setup")
 async def setup_panel(ctx):
     embed = discord.Embed(
         title="🎒 ระบบจัดการคลังสินค้าส่วนกลาง (Centralized Inventory)",
-        description="รองรับการพิมพ์ฝาก-ถอนครั้งละหลายๆ รายการพร้อมกันครับ",
+        description="สมาชิกทุกคนใช้คลังเดียวกัน สามารถกดเพิ่ม ถอน เช็กสต็อก หรือดูประวัติย้อนหลังได้เลยครับ",
         color=discord.Color.blue()
     )
-    embed.add_field(name="📥 เพิ่มไอเทมเข้าคลัง", value="พิมพ์ฝากหลายรายการ เช่น `ทองแดง 50` ขึ้นบรรทัดใหม่", inline=False)
-    embed.add_field(name="📤 ถอนไอเทมออกจากคลัง", value="พิมพ์เบิกหลายรายการ เช่น `เหล็ก 10` ขึ้นบรรทัดใหม่", inline=False)
-    embed.add_field(name="➕ เพิ่มประเภทไอเทมใหม่", value="สร้างชื่อไอเทมใหม่ลงคลังได้หลายรายการพร้อมกัน", inline=False)
-    embed.add_field(name="📦 เช็กสต็อกคลังกลาง", value="ดูรายการไอเทมและยอดรวมคงเหลือทั้งหมด", inline=False)
-    embed.add_field(name="📜 ดูประวัติเพิ่ม-ถอน", value="ดูรายการประวัติฝาก/เบิกย้อนหลัง 10 รายการล่าสุด", inline=False)
+    embed.add_field(name="📥 Add Quantity", value="เพิ่มจำนวนไอเทมที่มีอยู่ในคลัง", inline=False)
+    embed.add_field(name="📤 Withdraw Item", value="เบิกหรือหักจำนวนไอเทมออกจากคลัง", inline=False)
+    embed.add_field(name="➕ Add New Item", value="สร้างรายการไอเทมชนิดใหม่เข้าสู่คลัง", inline=False)
+    embed.add_field(name="📦 Check Stock", value="ดูรายการไอเทมและยอดรวมคงเหลือทั้งหมด", inline=False)
+    embed.add_field(name="📜 History Log", value="ดูรายการประวัติฝาก/เบิกย้อนหลัง 10 รายการล่าสุด", inline=False)
 
     await ctx.send(embed=embed, view=MainControlView())
 
