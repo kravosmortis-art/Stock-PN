@@ -307,11 +307,11 @@ async def setup_panel(ctx):
         description="สมาชิกทุกคนใช้คลังเดียวกัน สามารถกดเพิ่ม ถอน เช็กสต็อก หรือดูประวัติย้อนหลังได้เลยครับ",
         color=discord.Color.blue()
     )
-    embed.add_field(name="📥 เพิ่มไอเทมเข้าคลัง", value="เพิ่มจำนวนไอเทมที่มีอยู่ในคลังกลาง", inline=False)
-    embed.add_field(name="📤 ถอนไอเทมออกจากคลัง", value="เบิกหรือหักจำนวนไอเทมออกจากคลังกลาง", inline=False)
-    embed.add_field(name="➕ เพิ่มประเภทไอเทมใหม่", value="สร้างรายการไอเทมชนิดใหม่เข้าสู่คลังกลาง", inline=False)
-    embed.add_field(name="📦 เช็กสต็อกคลังกลาง", value="ดูรายการไอเทมและยอดรวมคงเหลือทั้งหมด", inline=False)
-    embed.add_field(name="📜 ดูประวัติเพิ่ม-ถอน", value="ดูรายการประวัติฝาก/เบิกย้อนหลัง 10 รายการล่าสุด", inline=False)
+    embed.add_field(name="📥 Add Quantity", value="เพิ่มจำนวนไอเทมที่มีอยู่ในคลัง", inline=False)
+    embed.add_field(name="📤 Withdraw Item", value="เบิกหรือหักจำนวนไอเทมออกจากคลัง", inline=False)
+    embed.add_field(name="➕ Add New Item", value="สร้างรายการไอเทมชนิดใหม่เข้าสู่คลัง", inline=False)
+    embed.add_field(name="📦 Check Stock", value="ดูรายการไอเทมและยอดรวมคงเหลือทั้งหมด", inline=False)
+    embed.add_field(name="📜 History Log", value="ดูรายการประวัติฝาก/เบิกย้อนหลัง 10 รายการล่าสุด", inline=False)
 
     await ctx.send(embed=embed, view=MainControlView())
 
